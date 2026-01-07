@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>小学生 問題集Web（科目×偏差値）</title>
+  <style>
+    :root { --gap: 14px; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif; margin: 0; background:#f7f7f8; color:#111; }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 18px; }
+    header { display:flex; gap: var(--gap); align-items:center; flex-wrap: wrap; }
+    h1 { font-size: 18px; margin: 0; }
+    .card { background:#fff; border-radius: 14px; padding: 18px; box-shadow: 0 6px 18px rgba(0,0,0,.06); margin-top: 14px; }
+    .row { display:flex; gap: var(--gap); flex-wrap: wrap; align-items: center; }
+    select, input[type="text"] { font-size: 16px; padding: 10px 12px; border-radius: 10px; border:1px solid #ddd; background:#fff; }
+    button { font-size: 16px; padding: 10px 14px; border-radius: 10px; border:0; background:#111; color:#fff; cursor:pointer; }
+    button.secondary { background:#e9e9ee; color:#111; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .meta { font-size: 13px; color:#444; }
+    .qno { font-weight: 700; }
+    .question { font-size: 18px; line-height: 1.7; margin: 12px 0 10px; }
+    .feedback { margin-top: 10px; font-weight: 800; }
+    .ok { color: #0a7a2f; }
+    .ng { color: #b00020; }
+    .progress { height: 10px; background:#eee; border-radius: 999px; overflow: hidden; }
+    .bar { height: 100%; width: 0%; background:#111; }
+    .small { font-size: 12px; color:#666; }
+    .footer { margin-top: 14px; display:flex; justify-content: space-between; gap: var(--gap); flex-wrap: wrap; }
+    .pill { display:inline-block; padding: 4px 10px; border-radius: 999px; background:#f1f1f4; font-size: 12px; }
+    .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Noto Sans Mono", monospace; background:#f1f1f4; padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>小学生 問題集Web（科目×偏差値 / 50問）</h1>
+      <div class="row">
+        <label class="meta">
+          科目：
+          <select id="subject">
+            <option value="math">算数</option>
+            <option value="japanese">国語</option>
+            <option value="science">理科</option>
+            <option value="social">社会</option>
+            <option value="english">英語</option>
+          </select>
+        </label>
+        <label class="meta">
+          難易度：
+          <select id="level">
+            <option value="30">偏差値30</option>
+            <option value="40">偏差値40</option>
+            <option value="50" selected>偏差値50</option>
+            <option value="60">偏差値60</option>
+            <option value="70">偏差値70</option>
+          </select>
+        </label>
+        <button class="secondary" id="newSetBtn" title="新しい50問に入れ替え（同じ科目・偏差値）">新しい50問</button>
+        <button class="secondary" id="resetBtn" title="進捗をリセット">進捗リセット</button>
+      </div>
+    </header>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between; width:100%">
+        <div class="meta">
+          <span class="qno" id="qIndex">1</span> / <span id="qTotal">50</span>
+          <span class="small">（<span class="kbd">Enter</span>で判定）</span>
+        </div>
+        <div style="min-width: 260px; flex: 1">
+          <div class="progress"><div class="bar" id="bar"></div></div>
+        </div>
+        <div class="meta">
+          正解済み：<span id="cleared">0</span>　
+          <span class="pill" id="badge">-</span>
+        </div>
+      </div>
+
+      <div class="question" id="questionText">読み込み中…</div>
+
+      <div class="row">
+        <input id="answerInput" type="text" inputmode="text" placeholder="答えを入力（例：600円 / 600 / 同じ / are）" style="flex:1; min-width: 240px;" />
+        <button id="checkBtn">判定</button>
+        <button class="secondary" id="hintBtn" title="ヒント（答えは出しません）">ヒント</button>
+      </div>
+
+      <div class="feedback" id="feedback"></div>
+      <div class="small" id="hint" style="margin-top:8px;"></div>
+
+      <div class="footer">
+        <button class="secondary" id="prevBtn">← 前へ</button>
+        <button class="secondary" id="nextBtn" disabled>次へ →（正解後）</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="meta">
+        仕様：<br/>
+        ・不正解なら何度でも回答OK（正解するまで次へ進めない）<br/>
+        ・科目×偏差値ごとに進捗保存（同じ端末/同じブラウザで続きから）<br/>
+        ・「新しい50問」で同じ条件の別セットに入れ替え（復習用）<br/>
+        ・問題はテンプレートから自動生成（50問・答え付き）
+      </div>
+    </div>
+  </div>
+
+<script>
+/** ======================
+ *  設定
+ * ====================== */
+const TEST_SIZE = 50;
+const STORAGE_KEY = "edu_quiz_progress_v2";
+
+/** ======================
+ *  乱数（シード付き）: 同じseedなら同じ問題が出る
+ * ====================== */
+function mulberry32(seed) {
+  let t = seed >>> 0;
+  return function() {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function seedFromString(str) {
+  // 簡易ハッシュ
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function pick(rng, arr) { return arr[Math.floor(rng()*arr.length)]; }
+function randint(rng, min, max) { return Math.floor(rng()*(max-min+1))+min; }
+
+/** ======================
+ *  正規化（表記ゆれ対策）
+ * ====================== */
+function normalize(s) {
+  if (s == null) return "";
+  s = String(s).trim()
+    .replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/[Ａ-Ｚａ-ｚ]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+
+  s = s.replace(/\s+/g, "")
+       .replace(/,/g, "")
+       .replace(/，/g, "")
+       .replace(/。/g, "")
+       .replace(/、/g, "");
+
+  // ㎡/㎠/L/mL 等
+  s = s.replace(/平方センチメートル/g, "㎠")
+       .replace(/cm\^?2|cm²/gi, "cm2")
+       .replace(/ミリリットル/g, "mL")
+       .replace(/リットル/g, "L");
+
+  // 大文字小文字を吸収（英語）
+  return s;
+}
+function normalizeForCompare(s) {
+  const n = normalize(s);
+  return n.toLowerCase();
+}
+function isCorrect(userInput, acceptableAnswers) {
+  const u = normalizeForCompare(userInput);
+  return acceptableAnswers.some(ans => {
+    const a = normalizeForCompare(ans);
+    if (u === a) return true;
+
+    // 数字だけ一致を許容（例：600円 と 600）
+    const uNum = u.replace(/[^\d.\-+]/g, "");
+    const aNum = a.replace(/[^\d.\-+]/g, "");
+    if (uNum && aNum && uNum === aNum) return true;
+
+    return false;
+  });
+}
+
+/** ======================
+ *  生成ルール（科目×偏差値）
+ *  ※偏差値が上がるほど、数が大きい/文章長い/複合問題などに
+ * ====================== */
+function levelConfig(level) {
+  const L = Number(level);
+  if (L === 30) return { num: 20, num2: 50, frac: false, dec: false, multiStep: false, kanji: "easy", eng: "easy" };
+  if (L === 40) return { num: 50, num2: 200, frac: false, dec: true,  multiStep: false, kanji: "mid",  eng: "easy" };
+  if (L === 50) return { num: 200, num2: 1000, frac: true,  dec: true,  multiStep: true,  kanji: "mid",  eng: "mid"  };
+  if (L === 60) return { num: 1000, num2: 5000, frac: true,  dec: true,  multiStep: true,  kanji: "hard", eng: "mid"  };
+  return            { num: 5000, num2: 20000, frac: true,  dec: true,  multiStep: true,  kanji: "hard", eng: "hard" };
+}
+
+/** ======================
+ *  問題生成（各科目）
+ *  返り値：[{q, a:[...], hint, tag}]
+ * ====================== */
+
+/** ----- 算数 ----- */
+function genMath(rng, level) {
+  const cfg = levelConfig(level);
+  const out = [];
+
+  // 1) 計算（足し算/引き算/掛け算/割り算）
+  const ops = ["+", "-", "×", "÷"];
+  for (let i=0; i<18; i++) {
+    const op = pick(rng, ops);
+    let a = randint(rng, 2, cfg.num);
+    let b = randint(rng, 2, cfg.num);
+    if (op === "÷") {
+      // 割り切れる形に
+      const q = randint(rng, 2, Math.max(2, Math.floor(cfg.num/2)));
+      const p = randint(rng, 2, 12);
+      a = q * p;
+      b = p;
+      out.push({ q: `${a} ÷ ${b} = `, a:[String(q)], hint:"割り算は「わられる数 ÷ わる数」", tag:"計算" });
+    } else if (op === "-") {
+      if (b > a) [a,b] = [b,a];
+      out.push({ q: `${a} − ${b} = `, a:[String(a-b)], hint:"引き算は大きい方−小さい方", tag:"計算" });
+    } else if (op === "+") {
+      out.push({ q: `${a} + ${b} = `, a:[String(a+b)], hint:"くり上がりに注意", tag:"計算" });
+    } else {
+      // ×
+      const m1 = randint(rng, 2, Math.min(12, Math.max(2, Math.floor(cfg.num/10))));
+      const m2 = randint(rng, 2, Math.min(20, Math.max(2, Math.floor(cfg.num/8))));
+      out.push({ q: `${m1} × ${m2} = `, a:[String(m1*m2)], hint:"かけ算は分配で工夫してもOK", tag:"計算" });
+    }
+  }
+
+  // 2) 小数/分数（レベル40以上）
+  if (cfg.dec) {
+    for (let i=0; i<8; i++) {
+      const x = randint(rng, 10, 99)/10; // 1.0〜9.9
+      const y = randint(rng, 10, 99)/10;
+      const mode = pick(rng, ["+", "-"]);
+      if (mode === "+") {
+        const ans = (x+y).toFixed(1);
+        out.push({ q: `${x} + ${y} = （小数第1位まで）`, a:[ans], hint:"小数点をそろえる", tag:"小数" });
+      } else {
+        const a1 = Math.max(x,y), b1 = Math.min(x,y);
+        const ans = (a1-b1).toFixed(1);
+        out.push({ q: `${a1} − ${b1} = （小数第1位まで）`, a:[ans], hint:"小数点をそろえる", tag:"小数" });
+      }
+    }
+  }
+  if (cfg.frac) {
+    for (let i=0; i<6; i++) {
+      const d = pick(rng, [2,3,4,5,6,8,10,12]);
+      const n = randint(rng, 1, d-1);
+      const k = randint(rng, 2, 6);
+      // 分数×整数
+      // (n/d)*k
+      const num = n*k;
+      let g = gcd(num, d);
+      const nn = num/g, dd = d/g;
+      out.push({
+        q: `${n}/${d} × ${k} = （分数で）`,
+        a:[`${nn}/${dd}`],
+        hint:"分子だけかけて、約分する",
+        tag:"分数"
+      });
+    }
+  }
+
+  // 3) 文章題（単位・速さ・割合っぽい）
+  for (let i=0; i<10; i++) {
+    const type = pick(rng, ["money","speed","perimeter","area","unit"]);
+    if (type === "money") {
+      const price = randint(rng, 80, 250);
+      const cnt = randint(rng, 2, 9);
+      out.push({ q:`1つ${price}円のおかしを${cnt}こ買いました。代金はいくら？`, a:[String(price*cnt), `${price*cnt}円`], hint:"単価×個数", tag:"文章" });
+    } else if (type === "speed") {
+      const per = pick(rng, [60, 80, 90, 100, 120, 150, 200]);
+      const min = randint(rng, 3, 9);
+      const dist = per * min;
+      out.push({ q:`${dist}mの道を${min}分で歩きました。1分に何m？`, a:[String(per), `${per}m`], hint:"全体÷時間", tag:"速さ" });
+    } else if (type === "perimeter") {
+      const a = randint(rng, 3, 20);
+      if (rng() < 0.5) {
+        out.push({ q:`1辺が${a}cmの正方形の周りの長さは？`, a:[String(a*4), `${a*4}cm`], hint:"正方形：1辺×4", tag:"図形" });
+      } else {
+        const b = randint(rng, 3, 20);
+        out.push({ q:`たて${a}cm、よこ${b}cmの長方形の周りの長さは？`, a:[String((a+b)*2), `${(a+b)*2}cm`], hint:"(たて+よこ)×2", tag:"図形" });
+      }
+    } else if (type === "area") {
+      const h = randint(rng, 3, 25);
+      const w = randint(rng, 3, 25);
+      out.push({ q:`たて${h}cm、よこ${w}cmの長方形の面積は？`, a:[String(h*w), `${h*w}㎠`, `${h*w}cm2`], hint:"面積＝たて×よこ", tag:"図形" });
+    } else {
+      const unit = pick(rng, ["cm","m","g","kg","mL","L"]);
+      if (unit === "cm") out.push({ q:`1mは何cm？`, a:["100","100cm"], hint:"m→cmは×100", tag:"単位" });
+      if (unit === "m") out.push({ q:`3kmは何m？`, a:["3000","3000m"], hint:"km→mは×1000", tag:"単位" });
+      if (unit === "g") out.push({ q:`1kgは何g？`, a:["1000","1000g"], hint:"kg→gは×1000", tag:"単位" });
+      if (unit === "kg") out.push({ q:`500gは何kg？`, a:["0.5","0.5kg"], hint:"g→kgは÷1000", tag:"単位" });
+      if (unit === "mL") out.push({ q:`1Lは何mL？`, a:["1000","1000mL","1000ml"], hint:"L→mLは×1000", tag:"単位" });
+      if (unit === "L") out.push({ q:`2000mLは何L？`, a:["2","2L"], hint:"mL→Lは÷1000", tag:"単位" });
+    }
+  }
+
+  // 4) 思考系（並び/規則/計算順）
+  for (let i=0; i<8; i++) {
+    const t = pick(rng, ["seq2","order","evenodd","brackets"]);
+    if (t === "seq2") {
+      const start = randint(rng, 1, 10) * 2;
+      out.push({ q:`${start}, ${start+2}, ${start+4}, ${start+6}, （ ） 次の数は？`, a:[String(start+8)], hint:"2ずつ増える", tag:"規則" });
+    } else if (t === "order") {
+      // ×と÷の左から
+      const a = randint(rng, 30, 90);
+      const b = pick(rng, [2,3,5,6]);
+      const c = pick(rng, [2,3,4]);
+      // (a ÷ b) × c が整数になるように
+      const aa = a - (a % b);
+      const ans = (aa / b) * c;
+      out.push({ q:`${aa} ÷ ${b} × ${c} = `, a:[String(ans)], hint:"×と÷は左から順に計算", tag:"順序" });
+    } else if (t === "evenodd") {
+      out.push({ q:`0, 2, 4, 6, 8 は（偶数/奇数）どっち？`, a:["偶数"], hint:"2で割り切れる数", tag:"性質" });
+    } else {
+      const x = randint(rng, 2, 9);
+      const y = randint(rng, 2, 9);
+      const z = randint(rng, 2, 9);
+      const ans = x * (y + z);
+      out.push({ q:`${x} ×（${y} + ${z}）= `, a:[String(ans)], hint:"先に( )の中", tag:"順序" });
+    }
+  }
+
+  // 50問に調整（余ったら削る/足りなければ補充）
+  return fitToSize(rng, out, TEST_SIZE);
+}
+
+/** ----- 国語 ----- */
+function genJapanese(rng, level) {
+  const cfg = levelConfig(level);
+  const out = [];
+
+  // 読み（漢字→よみ）
+  const kanjiEasy = [
+    ["気持ち","きもち"], ["学校","がっこう"], ["自然","しぜん"], ["安心","あんしん"],
+    ["友情","ゆうじょう"], ["努力","どりょく"], ["温度","おんど"], ["必要","ひつよう"],
+  ];
+  const kanjiMid = [
+    ["環境","かんきょう"], ["観察","かんさつ"], ["責任","せきにん"], ["工夫","くふう"],
+    ["経験","けいけん"], ["保護","ほご"], ["行動","こうどう"], ["確認","かくにん"],
+  ];
+  const kanjiHard = [
+    ["継続","けいぞく"], ["慎重","しんちょう"], ["判断","はんだん"], ["適切","てきせつ"],
+    ["優先","ゆうせん"], ["効率","こうりつ"], ["影響","えいきょう"], ["改善","かいぜん"],
+  ];
+  const pool = (cfg.kanji==="easy")? kanjiEasy : (cfg.kanji==="mid")? kanjiMid : kanjiHard;
+
+  for (let i=0;i<16;i++){
+    const [k,y]=pick(rng,pool);
+    out.push({ q:`「${k}」の読み方を書きなさい。`, a:[y], hint:"ひらがなでOK", tag:"漢字" });
+  }
+
+  // ことわざ/慣用句（選択ではなく穴埋め）
+  const proverb = [
+    {q:"「石の上にも（　）」：がまんして続ければ成功する。", a:["三年","3年"], h:"数字が入るよ"},
+    {q:"「（　）より団子」：見た目より実利。", a:["花"], h:"春に咲く"},
+    {q:"「（　）も木から落ちる」：名人でも失敗する。", a:["猿","さる"], h:"動物"},
+    {q:"「雨（　）を固める」：前もって準備する。", a:["垂れ"], h:"あめ◯◯れ"},
+  ];
+  for (let i=0;i<10;i++){
+    const p = pick(rng, proverb);
+    out.push({ q:p.q, a:p.a, hint:p.h, tag:"ことわざ" });
+  }
+
+  // 文法（主語/述語、修飾語）
+  const sentences = [
+    {s:"わたしは公園で遊びました。", q:"この文の述語（動作を表す部分）は？", a:["遊びました"], h:"最後の動詞"},
+    {s:"赤い花が咲きました。", q:"「赤い」は何をくわしくしていますか？", a:["花"], h:"何が赤い？"},
+    {s:"弟が元気に走った。", q:"「元気に」は何をくわしくしていますか？", a:["走った","走る"], h:"どのように？"},
+    {s:"昨日、友だちに会った。", q:"この文の主語は？", a:["（省略）","主語なし","わたし"], h:"主語が省略されることも"},
+  ];
+  for (let i=0;i<12;i++){
+    const it = pick(rng, sentences);
+    out.push({ q:`文：「${it.s}」\n${it.q}`, a:it.a, hint:it.h, tag:"文法" });
+  }
+
+  // 敬語（偏差値60以上で増）
+  const keigo = [
+    {q:"「行く」の尊敬語は？", a:["いらっしゃる","おいでになる"], h:"相手を高める"},
+    {q:"「見る」の謙譲語は？", a:["拝見する"], h:"自分をへりくだる"},
+    {q:"「言う」の尊敬語は？", a:["おっしゃる"], h:"相手の発言"},
+    {q:"「もらう」の謙譲語は？", a:["いただく"], h:"よく使う"},
+  ];
+  const keigoCount = Number(level) >= 60 ? 10 : 6;
+  for (let i=0;i<keigoCount;i++){
+    const k = pick(rng, keigo);
+    out.push({ q:k.q, a:k.a, hint:k.h, tag:"敬語" });
+  }
+
+  // 50問に調整
+  return fitToSize(rng, out, TEST_SIZE);
+}
+
+/** ----- 理科 ----- */
+function genScience(rng, level) {
+  const out = [];
+  // 小学生で安定して正解が決まる「基本知識」中心（レベル高いほど理由説明/用語を増やす）
+  const base = [
+    {q:"水がこおってできるものは？", a:["氷","こおり"], h:"水→固体"},
+    {q:"水があたためられて気体になると何？", a:["水蒸気","すいじょうき"], h:"水→気体"},
+    {q:"植物が光を使って養分をつくるはたらきを何という？", a:["光合成","こうごうせい"], h:"葉で行う"},
+    {q:"昆虫の体は大きく分けて（頭・胸・腹）の3つ。胸につくものは？", a:["足","あし","羽","はね"], h:"歩く/飛ぶ部分"},
+    {q:"月は自分で光っている？（はい/いいえ）", a:["いいえ","いいえ。","no","n"], h:"太陽の光を反射"},
+    {q:"電池の＋極と−極をつないで電気が通る道を何という？", a:["回路","かいろ"], h:"電気の通り道"},
+    {q:"磁石に引きつけられる金属の例を1つ答えよ。", a:["鉄","てつ"], h:"身近な金属"},
+    {q:"てこで「力点・支点・作用点」。支点はどこ？", a:["動かない点","固定された点","回転の中心"], h:"てこが回る中心"},
+    {q:"太陽系で地球の次に太陽に近い惑星は？", a:["金星","きんせい"], h:"地球の内側"},
+    {q:"音が伝わるために必要なものは？（空気など）", a:["空気","くうき","水","みず","物質","ぶっしつ"], h:"真空では伝わりにくい"},
+  ];
+
+  const advanced = [
+    {q:"水溶液で、金属をとかすはたらきが強いものを何という？", a:["酸","さん"], h:"すっぱい味のイメージ"},
+    {q:"電流の強さを表す単位は？（アルファベット）", a:["A","a"], h:"アンペア"},
+    {q:"物が燃えるときに必要な気体は？", a:["酸素","さんそ"], h:"呼吸にも必要"},
+    {q:"天気図で高気圧は空気が（上昇/下降）どっち？", a:["下降"], h:"晴れやすい"},
+    {q:"植物の根が水を吸い上げて運ぶ管は？", a:["道管","どうかん"], h:"水の通り道"},
+    {q:"目に見えない生き物で、食中毒の原因にもなるものは？", a:["細菌","さいきん","ばい菌","ばいきん"], h:"手洗いが大事"},
+  ];
+
+  // 出題数調整：レベルが高いほどadvancedを増やす
+  const L = Number(level);
+  const advCount = (L>=70)? 22 : (L>=60)? 18 : (L>=50)? 14 : (L>=40)? 10 : 6;
+
+  for (let i=0;i<TEST_SIZE;i++){
+    const useAdv = (i < advCount);
+    const it = useAdv ? pick(rng, advanced) : pick(rng, base);
+    // レベル60以上は「理由」系を少し混ぜる（答えは短く）
+    if (L>=60 && rng()<0.25) {
+      const why = [
+        {q:"氷が水に浮くのは、氷のほうが水より（軽い/重い）から。どっち？", a:["軽い"], h:"同じ体積なら？"},
+        {q:"月が光って見えるのは（太陽の光を反射する/自分で光る）どっち？", a:["太陽の光を反射する"], h:"鏡みたいに"},
+      ];
+      const w = pick(rng, why);
+      out.push({ q:w.q, a:w.a, hint:w.h, tag:"理由" });
+    } else {
+      out.push({ q:it.q, a:it.a, hint:it.h, tag:"知識" });
+    }
+  }
+  return fitToSize(rng, out, TEST_SIZE);
+}
+
+/** ----- 社会 ----- */
+function genSocial(rng, level) {
+  const out = [];
+  const L = Number(level);
+
+  // 地理（日本の基礎）、公民（くらしと政治の超基礎）、歴史（小学生の範囲の有名語）
+  const geo = [
+    {q:"日本の首都はどこ？", a:["東京","とうきょう"], h:"国会がある"},
+    {q:"日本を取り囲む海の1つ。「日本海」ともう1つは？（太平洋など）", a:["太平洋","たいへいよう"], h:"東側の大きな海"},
+    {q:"北海道は日本の（北/南）どちらにある？", a:["北"], h:"寒い地域"},
+    {q:"地図で方角をたしかめる道具は？", a:["方位磁針","ほういじしん","コンパス"], h:"Nが北"},
+    {q:"地図記号で「学校」を表す形は？（四角に旗）→言葉で「学校」でもOK", a:["学校"], h:"地図記号は覚えよう"},
+    {q:"山や谷の高さの違いを地図で表す線を何という？", a:["等高線","とうこうせん"], h:"高さが同じ"},
+  ];
+  const history = [
+    {q:"縄文時代の人々が使った道具（石をけずった道具）を何という？", a:["石器","せっき"], h:"石でできた道具"},
+    {q:"稲作が広まったのは（縄文/弥生）どちらの時代？", a:["弥生","やよい"], h:"米づくり"},
+    {q:"江戸時代の政治を行ったのは？（幕府）", a:["幕府","ばくふ"], h:"将軍が中心"},
+    {q:"明治時代に行われた大きな改革を何という？", a:["明治維新","めいじいしん"], h:"時代が大きく変わる"},
+  ];
+  const civics = [
+    {q:"みんなで決めたルールを守るための決まりを何という？", a:["法律","ほうりつ"], h:"国が定める"},
+    {q:"税金は主に何のために使われる？（公共サービスなど）", a:["公共サービス","こうきょうサービス","社会のため","みんなのため"], h:"学校・道路など"},
+    {q:"選挙でえらばれる人（国会議員など）を何という？", a:["代表","だいひょう"], h:"みんなの代わり"},
+  ];
+
+  // レベルが高いほど、用語・説明要求を少し増やす
+  const hard = [
+    {q:"三権分立の3つは「立法・行政・（　）」。（　）に入る言葉は？", a:["司法"], h:"裁判"},
+    {q:"国会の仕事は法律を（つくる/こわす）どっち？", a:["つくる"], h:"立法"},
+    {q:"都道府県は全部でいくつ？", a:["47"], h:"日本の数"},
+    {q:"輸入とは、外国から品物を（買う/売る）こと。どっち？", a:["買う"], h:"入ってくる"},
+  ];
+
+  // 50問生成
+  for (let i=0;i<TEST_SIZE;i++){
+    let it;
+    if (L>=70 && rng()<0.45) it = pick(rng, hard);
+    else {
+      const pool = (rng()<0.45)? geo : (rng()<0.7)? history : civics;
+      it = pick(rng, pool);
+    }
+    // レベル60以上は「ことばで説明」問題を混ぜる（答えは短め許容）
+    if (L>=60 && rng()<0.18) {
+      const explain = [
+        {q:"『災害にそなえる』ために家庭でできることを1つ書こう。（例：備蓄など）", a:["備蓄","びちく","避難場所の確認","ひなんばしょのかくにん","防災グッズの準備"], h:"水・食料・確認"},
+        {q:"『リサイクル』とは何？（短く）", a:["資源をくり返し使う","くりかえし使う","再利用","さいりよう"], h:"もったいないを減らす"},
+      ];
+      const ex = pick(rng, explain);
+      out.push({ q:ex.q, a:ex.a, hint:ex.h, tag:"記述" });
+    } else {
+      out.push({ q:it.q, a:it.a, hint:it.h, tag:"基礎" });
+    }
+  }
+  return fitToSize(rng, out, TEST_SIZE);
+}
+
+/** ----- 英語 ----- */
+function genEnglish(rng, level) {
+  const cfg = levelConfig(level);
+  const out = [];
+  const L = Number(level);
+
+  // 単語（小学生向け）
+  const vocabEasy = [
+    ["apple","りんご"], ["dog","いぬ"], ["cat","ねこ"], ["water","みず"],
+    ["book","ほん"], ["red","あか"], ["blue","あお"], ["school","がっこう"],
+  ];
+  const vocabMid = [
+    ["morning","あさ"], ["night","よる"], ["friend","ともだち"], ["family","かぞく"],
+    ["hungry","おなかがすいた"], ["happy","うれしい"], ["drink","のむ"], ["play","あそぶ"],
+  ];
+  const vocabHard = [
+    ["because","なぜなら"], ["usually","たいてい"], ["different","ちがう"], ["important","たいせつ"],
+    ["practice","れんしゅう"], ["remember","おぼえる"], ["library","としょかん"], ["question","しつもん"],
+  ];
+  const vocab = (cfg.eng==="easy")? vocabEasy : (cfg.eng==="mid")? vocabMid : vocabHard;
+
+  // 1) 単語：英→日 / 日→英
+  for (let i=0;i<18;i++){
+    const [en,ja] = pick(rng, vocab);
+    if (rng()<0.5) out.push({ q:`次の英単語の意味： "${en}"`, a:[ja], hint:"カタカナでもOKなことが多い", tag:"単語" });
+    else out.push({ q:`次の日本語を英語で： "${ja}"`, a:[en], hint:"つづりを思い出そう", tag:"単語" });
+  }
+
+  // 2) あいさつ・定型文
+  const phrases = [
+    {q:"「こんにちは」を英語で。", a:["hello","hi"], h:"あいさつ"},
+    {q:"「ありがとう」を英語で。", a:["thankyou","thank you","thanks"], h:"感謝"},
+    {q:"「さようなら」を英語で。", a:["goodbye","bye"], h:"別れ"},
+    {q:"「はじめまして」を英語で。", a:["nicetomeetyou","nice to meet you"], h:"自己紹介"},
+  ];
+  for (let i=0;i<10;i++){
+    const p = pick(rng, phrases);
+    out.push({ q:p.q, a:p.a, hint:p.h, tag:"表現" });
+  }
+
+  // 3) 文法（be動詞 / 一般動詞 / 疑問文）
+  const grammarEasy = [
+    {q:"I (　) a student. （am / is / are）", a:["am"], h:"Iはam"},
+    {q:"He (　) my friend. （am / is / are）", a:["is"], h:"He/Sheはis"},
+    {q:"You (　) kind. （am / is / are）", a:["are"], h:"Youはare"},
+  ];
+  const grammarMid = [
+    {q:"I (　) soccer. （play / plays）", a:["play"], h:"I/Youは原形"},
+    {q:"She (　) tennis. （play / plays）", a:["plays"], h:"三単現はs"},
+    {q:"(　) you like cats? （Do / Does）", a:["Do"], h:"主語がyouならDo"},
+    {q:"(　) he like dogs? （Do / Does）", a:["Does"], h:"主語がheならDoes"},
+  ];
+  const grammarHard = [
+    {q:"I (　) not hungry. （am / is / are）", a:["am"], h:"Iはam"},
+    {q:"She (　) not play baseball. （do / does）", a:["does"], h:"否定はdoes not"},
+    {q:"Do you (　) water? （drink / drinks）", a:["drink"], h:"Doの後は原形"},
+  ];
+
+  const grammarPool = (L<=40)? grammarEasy : (L<=60)? grammarMid : grammarHard;
+  const gCount = (L>=70)? 20 : (L>=60)? 18 : (L>=50)? 16 : 14;
+
+  for (let i=0;i<gCount;i++){
+    const g = pick(rng, grammarPool);
+    out.push({ q:g.q, a:g.a, hint:g.h, tag:"文法" });
+  }
+
+  // 4) 並べかえ（レベル60以上）
+  if (L>=60) {
+    const reorder = [
+      {q:"並べかえ： ( you / are / kind ) → 正しい文", a:["you are kind","youarek ind".replace(" ","")], h:"主語+be+形容詞"},
+      {q:"並べかえ： ( I / like / apples ) → 正しい文", a:["i like apples","ilikeapples"], h:"主語+動詞+目的語"},
+      {q:"並べかえ： ( do / you / play / soccer ) → 正しい疑問文", a:["do you play soccer","doyouplaysoccer"], h:"Do+主語+動詞"},
+    ];
+    for (let i=0;i<8;i++){
+      const r = pick(rng, reorder);
+      out.push({ q:r.q, a:r.a, hint:r.h, tag:"並べかえ" });
+    }
+  }
+
+  return fitToSize(rng, out, TEST_SIZE);
+}
+
+/** ======================
+ *  補助：サイズ調整 & gcd
+ * ====================== */
+function fitToSize(rng, arr, size) {
+  // 同じ問題の重複を軽く減らす（完全重複だけ排除）
+  const seen = new Set();
+  const uniq = [];
+  for (const it of arr) {
+    const key = it.q + "||" + it.a.join("|");
+    if (!seen.has(key)) { seen.add(key); uniq.push(it); }
+  }
+  // 足りなければランダムに複製（通常は足りる）
+  while (uniq.length < size) {
+    uniq.push(pick(rng, uniq));
+  }
+  // 多ければシャッフルして切る
+  shuffle(rng, uniq);
+  return uniq.slice(0, size);
+}
+function shuffle(rng, arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+}
+function gcd(a,b){ a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a; }
+
+/** ======================
+ *  科目ディスパッチ
+ * ====================== */
+const SUBJECT_LABEL = {
+  math: "算数",
+  japanese: "国語",
+  science: "理科",
+  social: "社会",
+  english: "英語",
+};
+function generateQuiz(subject, level, seed) {
+  const rng = mulberry32(seed);
+  if (subject === "math") return genMath(rng, level);
+  if (subject === "japanese") return genJapanese(rng, level);
+  if (subject === "science") return genScience(rng, level);
+  if (subject === "social") return genSocial(rng, level);
+  return genEnglish(rng, level);
+}
+
+/** ======================
+ *  状態
+ * ====================== */
+let subject = "math";
+let level = "50";
+let seed = seedFromString("math-50-default");
+let questions = [];
+let idx = 0;
+let clearedSet = new Set();
+
+/** ======================
+ *  DOM
+ * ====================== */
+const elSubject = document.getElementById("subject");
+const elLevel = document.getElementById("level");
+const elQIndex = document.getElementById("qIndex");
+const elQTotal = document.getElementById("qTotal");
+const elQuestionText = document.getElementById("questionText");
+const elAnswerInput = document.getElementById("answerInput");
+const elFeedback = document.getElementById("feedback");
+const elHint = document.getElementById("hint");
+const elBar = document.getElementById("bar");
+const elCleared = document.getElementById("cleared");
+const elBadge = document.getElementById("badge");
+
+const btnCheck = document.getElementById("checkBtn");
+const btnHint = document.getElementById("hintBtn");
+const btnPrev = document.getElementById("prevBtn");
+const btnNext = document.getElementById("nextBtn");
+const btnReset = document.getElementById("resetBtn");
+const btnNewSet = document.getElementById("newSetBtn");
+
+/** ======================
+ *  保存/復元（科目×偏差値×seed）
+ * ====================== */
+function storageKey() {
+  return `${STORAGE_KEY}::${subject}::${level}::${seed}`;
+}
+function saveProgress() {
+  const data = { idx, cleared: Array.from(clearedSet) };
+  localStorage.setItem(storageKey(), JSON.stringify(data));
+}
+function loadProgress() {
+  try {
+    const raw = localStorage.getItem(storageKey());
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Number.isInteger(data.idx)) idx = data.idx;
+    if (Array.isArray(data.cleared)) clearedSet = new Set(data.cleared);
+  } catch (_) {}
+}
+function clearProgress() {
+  localStorage.removeItem(storageKey());
+  idx = 0;
+  clearedSet = new Set();
+}
+
+/** ======================
+ *  描画
+ * ====================== */
+function render() {
+  const total = questions.length;
+
+  if (idx < 0) idx = 0;
+  if (idx >= total) idx = total - 1;
+
+  elSubject.value = subject;
+  elLevel.value = level;
+
+  elQIndex.textContent = String(idx + 1);
+  elQTotal.textContent = String(total);
+
+  const item = questions[idx];
+  elQuestionText.textContent = item.q;
+
+  const clearedCount = clearedSet.size;
+  elCleared.textContent = String(clearedCount);
+
+  const progress = Math.round((clearedCount / total) * 100);
+  elBar.style.width = progress + "%";
+
+  const isCleared = clearedSet.has(idx);
+  btnNext.disabled = !isCleared || idx === total - 1;
+  btnPrev.disabled = (idx === 0);
+
+  elBadge.textContent = `${SUBJECT_LABEL[subject]} / 偏差値${level} / 50問`;
+  elFeedback.textContent = "";
+  elFeedback.className = "feedback";
+  elHint.textContent = "";
+
+  elAnswerInput.value = "";
+  elAnswerInput.focus();
+
+  saveProgress();
+}
+
+/** ======================
+ *  判定・ヒント
+ * ====================== */
+function checkAnswer() {
+  const item = questions[idx];
+  const ok = isCorrect(elAnswerInput.value, item.a);
+
+  if (ok) {
+    clearedSet.add(idx);
+    elFeedback.textContent = "⭕ 正解！";
+    elFeedback.className = "feedback ok";
+    btnNext.disabled = (idx === questions.length - 1);
+  } else {
+    elFeedback.textContent = "❌ ちがうよ。もう一回！";
+    elFeedback.className = "feedback ng";
+    btnNext.disabled = true;
+    elAnswerInput.select();
+  }
+  saveProgress();
+}
+function showHint() {
+  const item = questions[idx];
+  const hint = item.hint || "問題文の条件（単位・順番・言葉の意味）をもう一度確認しよう！";
+  elHint.textContent = "ヒント： " + hint;
+}
+
+/** ======================
+ *  セット生成・切替
+ * ====================== */
+function rebuildQuiz({keepSeed=false}={}) {
+  if (!keepSeed) seed = seedFromString(`${subject}-${level}-${Date.now()}`); // 新セット
+  questions = generateQuiz(subject, level, seed);
+  idx = 0;
+  clearedSet = new Set();
+  loadProgress();
+  render();
+}
+
+/** ======================
+ *  イベント
+ * ====================== */
+btnCheck.addEventListener("click", checkAnswer);
+elAnswerInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") checkAnswer();
+});
+btnHint.addEventListener("click", showHint);
+
+btnPrev.addEventListener("click", () => { idx -= 1; render(); });
+btnNext.addEventListener("click", () => {
+  if (!clearedSet.has(idx)) return;
+  idx += 1;
+  render();
+});
+
+btnReset.addEventListener("click", () => {
+  if (!confirm("この科目・偏差値・問題セットの進捗をリセットしますか？")) return;
+  clearProgress();
+  render();
+});
+
+btnNewSet.addEventListener("click", () => {
+  if (!confirm("同じ科目・偏差値で『新しい50問』に入れ替えますか？（進捗は別になります）")) return;
+  rebuildQuiz({keepSeed:false});
+});
+
+elSubject.addEventListener("change", () => {
+  subject = elSubject.value;
+  seed = seedFromString(`${subject}-${level}-default`);
+  questions = generateQuiz(subject, level, seed);
+  idx = 0; clearedSet = new Set();
+  loadProgress();
+  render();
+});
+
+elLevel.addEventListener("change", () => {
+  level = elLevel.value;
+  seed = seedFromString(`${subject}-${level}-default`);
+  questions = generateQuiz(subject, level, seed);
+  idx = 0; clearedSet = new Set();
+  loadProgress();
+  render();
+});
+
+/** 起動 */
+(function init(){
+  // 初期は算数×偏差値50
+  seed = seedFromString(`${subject}-${level}-default`);
+  questions = generateQuiz(subject, level, seed);
+  loadProgress();
+  render();
+})();
+</script>
+</body>
+</html>
